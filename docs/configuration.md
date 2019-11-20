@@ -21,14 +21,17 @@ only from the first play. All the plays will end up in a single container image.
 
 #### Top-level keys
 
-| Key name             | type   | description                                             |
-|----------------------|--------|---------------------------------------------------------|
-| `base_image`         | string | name of the container image to use as a base            |
-| `ansible_extra_args` | string | extra CLI arguments to pass to ansible-playbook command |
-| `working_container`  | dict   | settings for the container where the build occurs       |
-| `target_image`       | dict   | metadata of the final image which we built              |
-| `cache_tasks`        | bool   | When true, enable caching mechanism                     |
-| `layering`           | bool   | When true, snapshot the image after a task is executed  |
+| Key name                  | type   | description
+|---------------------------|--------|---------------------------------------------------------
+| `base_image`              | string | name of the container image to use as a base
+| `buildah_from_extra_args` | string | extra CLI arguments to pass to buildah from command
+| `ansible_extra_args`      | string | extra CLI arguments to pass to ansible-playbook command
+| `working_container`       | dict   | settings for the container where the build occurs
+| `target_image`            | dict   | metadata of the final image which we built
+| `cache_tasks`             | bool   | When true, enable caching mechanism
+| `layering`                | bool   | When true, snapshot the image after a task is executed
+| `squash`                  | bool   | When true, squash the final image down to a single layer
+| `verbose_layer_names`     | bool   | tag layers with a verbose name if true (image-name + timestamp), defaults to false
 
 
 #### `working_container`
@@ -36,6 +39,7 @@ only from the first play. All the plays will end up in a single container image.
 | Key name             | type            | description                                                          |
 |----------------------|-----------------|----------------------------------------------------------------------|
 | `volumes`            | list of strings | volumes mappings for the working container (`HOST:CONTAINER:PARAMS`) |
+| `user`               | string          | UID or username to invoke the container during build (run ansible)   |
 
 #### `target_image`
 
@@ -47,6 +51,7 @@ only from the first play. All the plays will end up in a single container image.
 | `annotations`        | dict            | key/value data to apply to the final image (buildah/runc specific)   |
 | `environment`        | dict            | implicit environment variables to set in a container                 |
 | `cmd`                | string          | a default command to invoke the container                            |
+| `entrypoint`         | string          | entrypoint script to configure for the container                     |
 | `user`               | string          | UID or username used to invoke the container                         |
 | `ports`              | list of strings | a list of ports which are meant to be exposed on the host            |
 | `volumes`            | list of strings | a list of paths which are meant to be hosted outside of the container|
@@ -60,6 +65,7 @@ Example of a playbook with variables:
   vars:
     ansible_bender:
       base_image: "docker.io/library/python:3-alpine"
+      buildah_from_extra_args: "--dns 8.8.8.8"
       ansible_extra_args: "-vvv"
 
       working_container:
@@ -86,12 +92,16 @@ Please check out `ansible-bender build --help` for up to date options:
 ```
 $ ansible-bender build -h
 usage: ansible-bender build [-h] [--builder {docker,buildah}] [--no-cache]
+                            [--squash]
                             [--build-volumes [BUILD_VOLUMES [BUILD_VOLUMES ...]]]
-                            [-w WORKDIR] [-l [LABELS [LABELS ...]]]
+                            [--build-user BUILD_USER] [-w WORKDIR]
+                            [-l [LABELS [LABELS ...]]]
                             [--annotation [ANNOTATIONS [ANNOTATIONS ...]]]
                             [-e [ENV_VARS [ENV_VARS ...]]] [--cmd CMD]
+                            [--entrypoint ENTRYPOINT]
                             [-u USER] [-p [PORTS [PORTS ...]]]
                             [--runtime-volumes [RUNTIME_VOLUMES [RUNTIME_VOLUMES ...]]]
+                            [--extra-buildah-from-args EXTRA_BUILDAH_FROM_ARGS]
                             [--extra-ansible-args EXTRA_ANSIBLE_ARGS]
                             [--python-interpreter PYTHON_INTERPRETER]
                             PLAYBOOK_PATH [BASE_IMAGE] [TARGET_IMAGE]
@@ -109,10 +119,13 @@ optional arguments:
                         them if a task is unchanged; this option also implies
                         the final image is composed of a base image and one
                         additional layer
+  --squash              squash final image down to a single layer
   --build-volumes [BUILD_VOLUMES [BUILD_VOLUMES ...]]
                         mount selected directory inside the container during
                         build, should be specified as
                         '/host/dir:/container/dir'
+  --build-user BUILD_USER
+                        the container gets invoked with this user during build
   -w WORKDIR, --workdir WORKDIR
                         path to an implicit working directory in the container
   -l [LABELS [LABELS ...]], --label [LABELS [LABELS ...]]
@@ -124,12 +137,16 @@ optional arguments:
                         add an environment variable to the metadata of the
                         image, should be specified as 'KEY=VALUE'
   --cmd CMD             command to run by default in the container
+  --entrypoint ENTRYPOINT
+                        entrypoint script to configure for the container
   -u USER, --user USER  the container gets invoked with this user by default
   -p [PORTS [PORTS ...]], --ports [PORTS [PORTS ...]]
                         ports to expose from container by default
   --runtime-volumes [RUNTIME_VOLUMES [RUNTIME_VOLUMES ...]]
-                        path a directory which has daata stored outside of the
+                        path a directory which has data stored outside of the
                         container
+  --extra-buildah-from-args EXTRA_BUILDAH_FROM_ARGS
+                        arguments passed to buildah from command (be careful!)
   --extra-ansible-args EXTRA_ANSIBLE_ARGS
                         arguments passed to ansible-playbook command (be
                         careful!)

@@ -5,7 +5,7 @@ import datetime
 
 from ansible_bender.builders.base import BuildState
 from ansible_bender.constants import TIMESTAMP_FORMAT, ANNOTATIONS_KEY
-from ansible_bender.schema import IMAGE_META_SCHENA, BUILD_SCHEMA
+from ansible_bender.schema import IMAGE_META_SCHEMA, BUILD_SCHEMA 
 from ansible_bender.utils import graceful_get
 
 import jsonschema
@@ -17,6 +17,7 @@ class ImageMetadata:
     labels: dict with labels
     env_vars: dict with env vars
     cmd: str, command to run by default in the container
+    entrypoint: str, entrypoint script to configure for the container
     user: str, username or uid; the container gets invoked with this user by default
     ports: list of str, ports to expose from container by default
     volumes: list of str; paths within the container which has data stored outside
@@ -28,6 +29,7 @@ class ImageMetadata:
         self.annotations = {}
         self.env_vars = {}
         self.cmd = None
+        self.entrypoint = None
         self.user = None
         self.ports = []
         self.volumes = []
@@ -39,6 +41,7 @@ class ImageMetadata:
             ANNOTATIONS_KEY: self.annotations,
             "env_vars": self.env_vars,
             "cmd": self.cmd,
+            "entrypoint": self.entrypoint,
             "user": self.user,
             "ports": self.ports,
             "volumes": self.volumes
@@ -51,6 +54,7 @@ class ImageMetadata:
         self.annotations.update(data.get(ANNOTATIONS_KEY, {}))
         self.env_vars.update(data.get("environment", {}))
         self.cmd = data.get("cmd", None)
+        self.entrypoint = data.get("entrypoint", None)
         self.user = data.get("user", None)
         self.ports += data.get("ports", [])
         self.volumes += data.get("volumes", [])
@@ -64,13 +68,14 @@ class ImageMetadata:
         m.annotations = graceful_get(j, ANNOTATIONS_KEY, default={})
         m.env_vars = j["env_vars"]
         m.cmd = j["cmd"]
+        m.entrypoint = j.get("entrypoint", "")
         m.user = j["user"]
         m.ports = j["ports"]
         m.volumes = j["volumes"]
         return m
 
     def validate(self):
-        jsonschema.validate(self.to_dict(), IMAGE_META_SCHENA)
+        jsonschema.validate(self.to_dict(), IMAGE_META_SCHEMA)
 
 
 class Layer:
@@ -118,6 +123,7 @@ class Build:
         self.build_id = None  # PK, should be set by database
         self.playbook_path = None
         self.build_volumes = []  # volumes for the build container
+        self.build_user = None
         self.metadata = None  # Image metadata
         self.state = BuildState.NEW
         self.build_start_time = None
@@ -132,11 +138,14 @@ class Build:
         self.cache_tasks = True  # we cache by default, a user can opt out
         self.log_lines = []  # a list of strings
         self.layering = True
+        self.squash = False
         self.debug = False
         self.verbose = False
         self.pulled = False  # was the base image pulled?
+        self.buildah_from_extra_args = None
         self.ansible_extra_args = None
         self.python_interpreter = None
+        self.verbose_layer_names = False
 
     def to_dict(self):
         """ serialize """
@@ -144,6 +153,7 @@ class Build:
             "build_id": self.build_id,
             "playbook_path": self.playbook_path,
             "build_volumes": self.build_volumes,
+            "build_user": self.build_user,
             "metadata": self.metadata.to_dict(),
             "state": self.state.value,
             "build_start_time": self.build_start_time.strftime(TIMESTAMP_FORMAT)
@@ -161,22 +171,29 @@ class Build:
             # we could compress/base64 here, let's go for the easier solution first
             "log_lines": self.log_lines,
             "layering": self.layering,
+            "squash": self.squash,
             "debug": self.debug,
             "verbose": self.verbose,
             "pulled": self.pulled,
+            "buildah_from_extra_args": self.buildah_from_extra_args,
             "ansible_extra_args": self.ansible_extra_args,
             "python_interpreter": self.python_interpreter,
+            "verbose_layer_names": self.verbose_layer_names,
         }
 
     def update_from_configuration(self, data):
         """ update current object with data provided from Ansible vars """
         self.build_volumes += graceful_get(data, "working_container", "volumes", default=[])
+        self.build_user = graceful_get(data, "working_container", "user")
         self.base_image = graceful_get(data, "base_image")
         self.target_image = graceful_get(data, "target_image", "name")
         # self.builder_name = None
         self.cache_tasks = graceful_get(data, "cache_tasks", default=self.cache_tasks)
         self.layering = graceful_get(data, "layering", default=self.layering)
+        self.squash = graceful_get(data, "squash", default=self.squash)
+        self.buildah_from_extra_args = graceful_get(data, "buildah_from_extra_args")
         self.ansible_extra_args = graceful_get(data, "ansible_extra_args")
+        self.verbose_layer_names = graceful_get(data, "verbose_layer_names")
         # we should probably get this from the official Ansible variable
         # self.python_interpreter = None
 
@@ -187,6 +204,7 @@ class Build:
         b.build_id = j["build_id"]
         b.playbook_path = j.get("playbook_path", None)
         b.build_volumes = j["build_volumes"]
+        b.build_user = graceful_get(j, "build_user")
         b.metadata = ImageMetadata.from_json(j["metadata"])
         b.state = BuildState(j["state"])
         b.build_start_time = None
@@ -208,11 +226,14 @@ class Build:
         b.cache_tasks = j["cache_tasks"]
         b.log_lines = j["log_lines"]
         b.layering = j["layering"]
+        b.squash = j.get("squash", False)
         b.debug = j["debug"]
         b.verbose = j["verbose"]
         b.pulled = j["pulled"]
+        b.buildah_from_extra_args = j.get("buildah_from_extra_args", None)
         b.ansible_extra_args = j.get("ansible_extra_args", None)
         b.python_interpreter = j.get("python_interpreter", None)
+        b.verbose_layer_names = graceful_get(j, "verbose_layer_names", default=False)
         return b
 
     def record_layer(self, content, layer_id, base_image_id, cached=None):

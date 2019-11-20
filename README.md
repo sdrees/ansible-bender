@@ -8,8 +8,8 @@ and turns them into container images. It has a pluggable builder selection —
 it is up to you to pick the tool which will be used to construct your container
 image. Right now the only supported builder is
 [buildah](https://github.com/containers/buildah).
-[More](http://github.com/TomasTomecek/ansible-bender/issues/25) [to
-come](http://github.com/TomasTomecek/ansible-bender/issues/26) in the future.
+[More](http://github.com/ansible-community/ansible-bender/issues/25) [to
+come](http://github.com/ansible-community/ansible-bender/issues/26) in the future.
 Ansible-bender (ab) relies on [Ansible connection
 plugins](https://docs.ansible.com/ansible/2.6/plugins/connection.html) for
 performing builds.
@@ -68,6 +68,8 @@ Command | Description
 `get-logs` | display build logs
 `inspect` | provide detailed metadata about the selected build
 `push` | Push images you built to remote locations.
+`clean` | Clean images from database which are no longer present on the disk.
+`init` | Adds a template playbook with all the vars.
 
 
 ## Installation
@@ -78,7 +80,7 @@ $ pip3 install ansible-bender
 
 If you are brave enough, please install bender directly from git master:
 ```
-$ pip3 install git+https://github.com/TomasTomecek/ansible-bender
+$ pip3 install git+https://github.com/ansible-community/ansible-bender
 ```
 
 If `pip3` command is not available on your system, you can run pip like this:
@@ -92,11 +94,12 @@ $ python3 -m pip install ...
 Pip takes care of python dependencies, but ansible-bender also requires a few
 binaries to be present on your host system:
 
-* [Podman](https://github.com/containers/libpod)
-* [Buildah](https://github.com/containers/buildah)
-* [Ansible](https://github.com/ansible/ansible)
+* [Podman](https://podman.io/getting-started/installation)
+* [Buildah](https://github.com/containers/buildah/blob/master/install.md)
+* [Ansible](https://docs.ansible.com/ansible/latest/installation_guide/intro_installation.html)
   * Ansible needs to be built against python 3
-* Python 3
+* Python 3.6 or later (python 3.5 or earlier are not supported and known not
+  to be working)
 
 Last two requirements can be pretty tough: you can always run bender in a
 privileged container.
@@ -104,8 +107,11 @@ privileged container.
 
 #### Setting up buildah and podman
 
-If you run ansible-bender as root, you don't need to do anything. Just install
-the packages and you are good to go.
+If you run ansible-bender as root, you don't need to set up anything. Just
+install the packages and you are good to go. This is the preferred way —
+buildah and podman are much more efficient when using the in-kernel overlay
+filesystem and you will encounter [less issues than with the rootless
+mode](https://github.com/containers/libpod/blob/master/rootless.md).
 
 On the other hand, if you want to utilize [the rootless
 mode](https://github.com/containers/libpod/blob/master/docs/podman-create.1.md#rootless-containers),
@@ -132,6 +138,7 @@ you are running into issues.
     inside the base image, it doesn't matter — Ansible is able to utilize
     python 2 even if it's invoked with python 3 on the control machine.
 
+
 ### Requirements (Ansible playbook)
 
 None.
@@ -146,6 +153,23 @@ content of the hosts variable.
 
 You can configure ansible-bender and set metadata on your final image, in order
 to do that, please check out [docs/configuration.md](docs/configuration.md).
+
+If you want to configure Ansible itself, you can set any environment variable
+and ansible-bender will relay them to `ansible-playbook` command, an example:
+```
+ANSIBLE_STDOUT_CALLBACK=debug ansible-bender build simple-playbook.yaml
+```
+Bender creates ansible.cfg on the fly which is then used during an
+ansible-playbook run. If you define `ANSIBLE_CONFIG`, it will likely break the
+build process: you've been warned.
+
+
+### Ansible roles
+
+If you are using roles in your playbook and they are in a non-standard place,
+you can utilize `ANSIBLE_ROLES_PATH` environment variable to tell ansible where
+your roles lives. Bender does not tamper with environment variables, all are
+passed to ansible-playbook.
 
 
 ## Debugging Bender

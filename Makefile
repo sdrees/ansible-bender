@@ -4,16 +4,21 @@ PY_PACKAGE := ansible-bender
 # container image with ab inside
 CONT_IMG := $(PY_PACKAGE)
 ANSIBLE_BENDER := python3 -m ansible_bender.cli
+PYTEST_EXEC := pytest-3
 
 build-ab-img: recipe.yml
 	$(ANSIBLE_BENDER) build -- ./recipe.yml $(BASE_IMAGE) $(CONT_IMG)
 
 check:
-	PYTHONPATH=$(CURDIR) PYTHONDONTWRITEBYTECODE=yes pytest-3 --cov=ansible_bender -l -v $(TEST_TARGET)
+	PYTHONPATH=$(CURDIR) PYTHONDONTWRITEBYTECODE=yes $(PYTEST_EXEC) --cov=ansible_bender -l -v $(TEST_TARGET)
+
+check-a-lot:
+	WITH_TESTS=yes vagrant up --provision
+	WITH_TESTS=yes vagrant halt
 
 check-in-container:
 	podman run -ti --rm \
-		--tmpfs /tmp:rw,exec,nosuid,nodev,size=1000000k \
+		--tmpfs /tmp:rw,nosuid,nodev,size=1000000k \
 		--privileged \
 		-e CGROUP_MANAGER=cgroupfs \
 		-v $(CURDIR):/src \
@@ -39,20 +44,6 @@ check-in-okd:
 	oc get all
 	sleep 2
 	oc logs -f pod/ab
-
-check-pypi-packaging:
-	podman run --rm -ti -v $(CURDIR):/src:Z -w /src $(CONT_IMG) bash -c '\
-		set -x \
-		&& rm -f dist/* \
-		&& python3 ./setup.py sdist bdist_wheel \
-		&& pip3 install dist/*.tar.gz \
-		&& ansible-bender --help \
-		&& ansible-bender build --help \
-		&& pip3 show $(PY_PACKAGE) \
-		&& twine check ./dist/* \
-		&& python3 -c "import ansible_bender; ansible_bender.__version__.startswith(\"0.3.1\")" \
-		&& pip3 show -f $(PY_PACKAGE) | ( grep test && exit 1 || :) \
-		'
 
 #FIXME: try outer container to be rootless
 #       build tests image

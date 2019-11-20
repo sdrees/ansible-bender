@@ -1,21 +1,12 @@
-import logging
 import os
 import random
 import string
-import subprocess
-
-import pytest
-
-from ansible_bender.builders.buildah_builder import buildah
-from ansible_bender.utils import set_logging
-
-
-set_logging(level=logging.DEBUG)
 
 
 tests_dir = os.path.dirname(os.path.abspath(__file__))
 project_dir = os.path.dirname(tests_dir)
 data_dir = os.path.abspath(os.path.join(tests_dir, "data"))
+roles_dir = os.path.join(data_dir, "roles")
 buildah_inspect_data_path = os.path.join(data_dir, "buildah_inspect.json")
 basic_playbook_path = os.path.join(data_dir, "basic_playbook.yaml")
 multiplay_path = os.path.join(data_dir, "multiplay.yaml")
@@ -29,7 +20,10 @@ dont_cache_playbook_path = os.path.join(data_dir, "dont_cache_playbook.yaml")
 small_basic_playbook_path = os.path.join(data_dir, "small_basic_playbook.yaml")
 change_layering_playbook = os.path.join(data_dir, "change_layering.yaml")
 bad_playbook_path = os.path.join(data_dir, "bad_playbook.yaml")
+role_pb_path = os.path.join(data_dir, "role.yaml")
 base_image = "docker.io/library/python:3-alpine"
+playbook_with_unknown_keys = os.path.join(data_dir, "playbook_with_unknown_keys.yaml")
+
 
 C7_AP_VER_OUT = """\
 ansible-playbook 2.4.2.0

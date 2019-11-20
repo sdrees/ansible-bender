@@ -91,10 +91,12 @@ class Database:
                 time.sleep(0.1)
             except FileNotFoundError:
                 # cool, let's take the lock
-                # FIXME: but this is not atomic, we should use open() for that
-                with open(self._lock_path(), "w") as fd:
-                    fd.write("%s" % os.getpid())
-                break
+                try:
+                    with os.fdopen(os.open(self._lock_path(), os.O_WRONLY|os.O_EXCL|os.O_CREAT ),'w') as fd:
+                        fd.write("%s" % os.getpid())
+                    break
+                except FileExistsError:
+                    continue
         # logger.debug("this stack has the lock: %s", traceback.extract_stack())
         yield True
         self.release()
@@ -158,8 +160,11 @@ class Database:
         """ return id for next build id and increment the one in DB """
         next_build_id = data["next_build_id"]
         data["next_build_id"] += 1
-        # TODO: verify such build is not in DB, we don't want to overwrite, just in case
-        return str(next_build_id)
+        if not data["builds"].get(str(next_build_id)):
+            return str(next_build_id)
+        else:
+            raise Exception(f'Database seems to be corrupted. Build {next_build_id} already exists.')
+
 
     def record_build(self, build_i, build_id=None, build_state=None, set_finish_time=False):
         """
@@ -234,3 +239,18 @@ class Database:
         with self.acquire():
             data = self._load()
             return [Build.from_json(b) for b in data["builds"].values()]
+
+    def delete_build(self, build_id):
+        """
+        delete a build from database
+
+        :param build_id: str, id of the build to be deleted from DB
+        """
+        with self.acquire():
+            data = self._load()
+            try:
+                del data["builds"][build_id]
+            except KeyError:
+                raise RuntimeError("There is no such build with ID %s" % build_id)
+            finally:
+                self._save(data)

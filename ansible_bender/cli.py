@@ -6,15 +6,17 @@ import argparse
 import json
 import sys
 
+import pkg_resources
 import yaml
 from tabulate import tabulate
 
 from ansible_bender.api import Application
-from ansible_bender.constants import ANNOTATIONS_KEY
+from ansible_bender.constants import ANNOTATIONS_KEY, PLAYBOOK_TEMPLATE
 from ansible_bender.core import PbVarsParser
 from ansible_bender.db import PATH_CANDIDATES
 from ansible_bender.okd import build_inside_openshift
 
+from ansible_bender.utils import fancy_time
 
 def split_once_or_fail_with(strink, pattern, error_message):
     """
@@ -46,6 +48,9 @@ class CLI:
                                  help="provide verbose output")
         self.parser.add_argument("--debug", action="store_true",
                                  help="provide all the output")
+        self.parser.add_argument("-V", "--version", action="store_true",
+                                 help="print version of ansible-bender")
+
         candidates_str = ", ".join(filter(lambda x: x, PATH_CANDIDATES))
         self.parser.add_argument(
             "--database-dir",
@@ -60,6 +65,8 @@ class CLI:
         self._do_get_logs_interface()
         self._do_inspect_interface()
         self._do_push_interface()
+        self._do_clean_interface()
+        self._do_init_interface()
 
         self.args = self.parser.parse_args()
         debug = False
@@ -100,10 +107,20 @@ class CLI:
                  "this option also implies the final image is composed of a base image and one additional layer"
         )
         self.build_parser.add_argument(
+            "--squash",
+            action="store_true",
+            default=False,
+            help="squash final image down to a single layer"
+        )
+        self.build_parser.add_argument(
             "--build-volumes",
             help="mount selected directory inside the container during build, "
                  "should be specified as '/host/dir:/container/dir'",
             nargs="*"
+        )
+        self.build_parser.add_argument(
+            "--build-user",
+            help="the container gets invoked with this user during build"
         )
         self.build_parser.add_argument(
             "-w", "--workdir",
@@ -134,6 +151,10 @@ class CLI:
             help="command to run by default in the container"
         )
         self.build_parser.add_argument(
+            "--entrypoint",
+            help="entrypoint script to configure for the container"
+        )
+        self.build_parser.add_argument(
             "-u", "--user",
             help="the container gets invoked with this user by default"
         )
@@ -144,8 +165,12 @@ class CLI:
         )
         self.build_parser.add_argument(
             "--runtime-volumes",
-            help="path a directory which has daata stored outside of the container",
+            help="path a directory which has data stored outside of the container",
             nargs="*"
+        )
+        self.build_parser.add_argument(
+            "--extra-buildah-from-args",
+            help="arguments passed to buildah from command (be careful!)"
         )
         self.build_parser.add_argument(
             "--extra-ansible-args",
@@ -228,6 +253,20 @@ class CLI:
         # )
         self.push_parser.set_defaults(subcommand="push")
 
+    def _do_init_interface(self):
+        self.lb_parser = self.subparsers.add_parser(
+            name="init",
+            description="Add a template playbook with all the vars.",
+        )
+        self.lb_parser.set_defaults(subcommand="init")
+
+    def _do_clean_interface(self):
+        self.lb_parser = self.subparsers.add_parser(
+            name="clean",
+            description="Clean images from database which are no longer present on the disk",
+        )
+        self.lb_parser.set_defaults(subcommand="clean")
+
     def _build(self):
         pb_vars_p = PbVarsParser(self.args.playbook_path)
         build, metadata = pb_vars_p.get_build_and_metadata()
@@ -254,6 +293,8 @@ class CLI:
                 metadata.env_vars[k] = v
         if self.args.cmd:
             metadata.cmd = self.args.cmd
+        if self.args.entrypoint:
+            metadata.entrypoint = self.args.entrypoint
         if self.args.user:
             metadata.user = self.args.user
         if self.args.ports:
@@ -272,6 +313,10 @@ class CLI:
             build.builder_name = self.args.builder
         if self.args.no_cache is not None:
             build.cache_tasks = not self.args.no_cache
+        if self.args.squash:
+            build.squash = self.args.squash
+        if self.args.extra_buildah_from_args:
+            build.buildah_from_extra_args = self.args.extra_buildah_from_args
         if self.args.extra_ansible_args:
             build.ansible_extra_args = self.args.extra_ansible_args
         if self.args.python_interpreter:
@@ -289,13 +334,13 @@ class CLI:
         for b in builds:
             build_time = ""
             if b.build_finished_time and b.build_start_time:
-                build_time = b.build_finished_time - b.build_start_time
+                build_time = fancy_time(b.build_finished_time - b.build_start_time)
             builds_data.append((
                 b.build_id,
                 b.target_image,
                 b.state.value,
                 b.build_finished_time if b.build_finished_time else "",
-                build_time  # TODO: make it fancy
+                build_time
             ))
         print(tabulate(builds_data, headers=header))
 
@@ -318,9 +363,36 @@ class CLI:
         # force = self.args.force
         self.app.push(target, build_id=build_id, force=False)
 
+    def _clean(self):
+        builds = self.app.list_builds()
+        print("Cleaning images from database which are no longer present on the disk...")
+        for b in builds:
+            try:
+                run_cmd(["podman", "inspect", b.target_image],
+                        return_output=False, log_output=False)
+            except subprocess.CalledProcessError:
+                self.app.remove_build(b.build_id)
+                print(f"Build entry with ID {b.build_id} has been removed from DB as it no longer has it's corresponding image")
+                continue
+        print("Done!")
+
+    def _init(self):
+        with open('playbook.yml', 'w') as fd:
+            fd.write(PLAYBOOK_TEMPLATE)
+        print("Created an Ansible playbook template as playbook.yml")
+        print("Edit the playbook accordingly and run the build subcommand:\n\nansible-bender build playbook.yaml")
+
     def run(self):
         subcommand = getattr(self.args, "subcommand", "nope")
         try:
+            if self.args.version:
+                try:
+                    print(pkg_resources.get_distribution("ansible-bender").version)
+                except pkg_resources.DistributionNotFound:
+                    print("Ansible-bender is not installed, therefore we can't print the version.")
+                    print("Please run `python3 setup.py --version` instead.")
+                    return 18
+                return 0
             if subcommand == "build":
                 self._build()
                 return 0
@@ -338,6 +410,12 @@ class CLI:
                 return 0
             elif subcommand == "bio":
                 self._build_inside_openshift()
+                return 0
+            elif subcommand == "clean":
+                self._clean()
+                return 0
+            elif subcommand == "init":
+                self._init()
                 return 0
         except KeyboardInterrupt:
             return 133

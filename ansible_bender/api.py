@@ -1,12 +1,13 @@
+import datetime
 import logging
 import os
-import datetime
-
 import sys
+from typing import Tuple, List
 
 from ansible_bender.builder import get_builder
 from ansible_bender.builders.base import BuildState
-from ansible_bender.constants import OUT_LOGGER, OUT_LOGGER_FORMAT
+from ansible_bender.conf import Build
+from ansible_bender.constants import OUT_LOGGER, OUT_LOGGER_FORMAT, TIMESTAMP_FORMAT
 from ansible_bender.core import AnsibleRunner
 from ansible_bender.db import Database
 from ansible_bender.exceptions import AbBuildUnsuccesful
@@ -33,7 +34,7 @@ class Application:
         self.db_path = self.db.db_root_path
 
     @staticmethod
-    def set_logging(debug=False, verbose=False):
+    def set_logging(debug: bool = False, verbose: bool = False):
         """ configure logging """
         if debug:
             set_logging(level=logging.DEBUG)
@@ -46,7 +47,7 @@ class Application:
             set_logging(logger_name=OUT_LOGGER, level=logging.INFO, format=OUT_LOGGER_FORMAT,
                         handler_kwargs={"stream": sys.stdout})
 
-    def build(self, build):
+    def build(self, build: Build):
         """
         build container image
 
@@ -90,9 +91,12 @@ class Application:
 
             builder.create()
         except Exception:
-            self.db.record_build(None, build_id=build.build_id,
-                                     build_state=BuildState.FAILED,
-                                     set_finish_time=True)
+            self.db.record_build(
+                None,
+                build_id=build.build_id,
+                build_state=BuildState.FAILED,
+                set_finish_time=True
+            )
             raise
 
         try:
@@ -118,7 +122,7 @@ class Application:
                                      set_finish_time=True)
             b.log_lines = output
             # commit the final image and apply all metadata
-            b.final_layer_id = builder.commit(build.target_image)
+            b.final_layer_id = builder.commit(build.target_image, final_image=True)
 
             if not b.is_layering_on():
                 self.record_progress(b, None, b.final_layer_id)
@@ -129,7 +133,7 @@ class Application:
         finally:
             builder.clean()
 
-    def get_build(self, build_id=None):
+    def get_build(self, build_id: str = None) -> Build:
         """
         get selected build or latest build if build_id is None
 
@@ -140,7 +144,7 @@ class Application:
             return self.db.get_latest_build()
         return self.db.get_build(build_id)
 
-    def get_logs(self, build_id=None):
+    def get_logs(self, build_id: str = None) -> List[str]:
         """
         get logs for a specific build, if build_id is not, select the latest build
 
@@ -150,10 +154,10 @@ class Application:
         build = self.get_build(build_id=build_id)
         return build.log_lines
 
-    def list_builds(self):
+    def list_builds(self) -> List[Build]:
         return self.db.load_builds()
 
-    def inspect(self, build_id=None):
+    def inspect(self, build_id: str = None):
         """
         provide detailed information about the selected build
 
@@ -166,7 +170,7 @@ class Application:
         del di["layer_index"]  # internal info
         return di
 
-    def push(self, target, build_id=None, force=False):
+    def push(self, target, build_id: str = None, force: bool = False):
         """
         push built image into a remote location, this method raises an exception when:
          * the push failed or the image can't be found
@@ -181,10 +185,13 @@ class Application:
         builder = self.get_builder(build)
         builder.push(build, target, force=force)
 
-    def get_builder(self, build):
+    def get_builder(self, build: Build):
         return get_builder(build.builder_name)(build, debug=self.debug)
 
-    def maybe_load_from_cache(self, content, build_id):
+    def maybe_load_from_cache(self, content: str, build_id: str) -> str:
+        if not content:
+            return
+
         build = self.db.get_build(build_id)
         builder = self.get_builder(build)
 
@@ -195,7 +202,7 @@ class Application:
         builder.swap_working_container()
         return layer_id
 
-    def get_layer(self, content, base_image_id):
+    def get_layer(self, content: str, base_image_id: str) -> str:
         """
         provide a layer for given content and base_image_id; if there
         is such layer in cache store, return its layer_id
@@ -206,7 +213,7 @@ class Application:
         """
         return self.db.get_cached_layer(content, base_image_id)
 
-    def record_progress(self, build, content, layer_id, build_id=None):
+    def record_progress(self, build: Build, content: str, layer_id: str, build_id: str = None) -> Tuple[str, str]:
         """
         record build progress to the database
 
@@ -235,18 +242,30 @@ class Application:
         self.db.record_build(build)
         return base_image_id, layer_id
 
-    def create_new_layer(self, content, build):
+    def create_new_layer(self, content: str, build: Build) -> Tuple[str, str, str]:
+        """
+        create new layer from the current state of the container of specified build
+
+        :param content: task as a str
+        :param build: Build instance
+        :return:
+        """
         builder = self.get_builder(build)
-        timestamp = datetime.datetime.now().strftime("%Y%M%d-%H%M%S")
-        image_name = "%s-%s" % (build.target_image, timestamp)
-        # buildah doesn't accept upper case
-        image_name = image_name.lower()
+        image_name = ""
+        if build.verbose_layer_names:
+            timestamp = datetime.datetime.now().strftime(TIMESTAMP_FORMAT)
+            image_name = "%s-%s" % (build.target_image, timestamp)
+            # buildah doesn't accept upper case
+            image_name = image_name.lower()
         layer_id = builder.commit(image_name, print_output=False)
         base_image_id, _ = self.record_progress(build, content, layer_id)
         return image_name, layer_id, base_image_id
 
-    def cache_task_result(self, content, build):
+    def cache_task_result(self, content: str, build: Build) -> str:
         """ snapshot the container after a task was executed """
+        if not content:
+            logger.info("no content provided, will not cache this layer")
+            return
         image_name, layer_id, base_image_id = self.create_new_layer(content, build)
         if not build.cache_tasks:  # actually we could still cache results
             return
@@ -255,3 +274,6 @@ class Application:
 
     def clean(self):
         self.db.release()
+
+    def remove_build(self, build_id: str):
+        self.db.delete_build(build_id)
